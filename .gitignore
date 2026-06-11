@@ -10,9 +10,10 @@ __pycache__/
 *.pyd
 .Python
 
-# Outputs gerados pelo código (não versionamos resultados, só o código)
+# Outputs gerados pelo código (análises intermediárias e gráficos)
 outputs/dados_processados/
-outputs/graficos/
+
+# dados_tratados/ é versionado — contém o DataFrame final limpo
 
 # Jupyter
 .ipynb_checkpoints/
