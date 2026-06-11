@@ -63,34 +63,24 @@ def carregar_arquivos_ano(ano: int) -> pd.DataFrame:
     """
     Carrega e concatena todos os CSVs de um determinado ano eleitoral.
 
-    Para 2022 existe um arquivo nacional (consulta_cand_2022_BR.csv); nesse
-    caso usamos ele diretamente para evitar duplicatas.
-    Para 2014 e 2018 os dados estão divididos por estado — carregamos todos
-    e empilhamos num único DataFrame.
+    O arquivo BR (ex: consulta_cand_2022_BR.csv) contém apenas candidatos de
+    âmbito nacional (presidente e vice). Os arquivos estaduais têm todos os
+    demais cargos. Por isso sempre carregamos os dois e concatenamos.
     """
-    # Arquivo nacional do TSE (existe apenas em 2022)
-    arquivo_nacional = os.path.join(DATA_DIR, str(ano), f"consulta_cand_{ano}_BR.csv")
+    padrao = os.path.join(DATA_DIR, str(ano), "**", f"consulta_cand_{ano}_*.csv")
+    arquivos = glob.glob(padrao, recursive=True)
 
-    if os.path.exists(arquivo_nacional):
-        print(f"  [{ano}] Carregando arquivo nacional...")
-        df = pd.read_csv(arquivo_nacional, **READ_PARAMS)
-    else:
-        # Busca todos os CSVs dentro da pasta do ano recursivamente
-        padrao = os.path.join(DATA_DIR, str(ano), "**", f"consulta_cand_{ano}_*.csv")
-        arquivos = glob.glob(padrao, recursive=True)
+    print(f"  [{ano}] {len(arquivos)} arquivo(s) encontrado(s) — concatenando...")
 
-        print(f"  [{ano}] {len(arquivos)} arquivos estaduais encontrados — concatenando...")
+    partes = []
+    for caminho in arquivos:
+        try:
+            partes.append(pd.read_csv(caminho, **READ_PARAMS))
+        except Exception as e:
+            print(f"    AVISO: erro ao ler {caminho}: {e}")
 
-        partes = []
-        for caminho in arquivos:
-            try:
-                partes.append(pd.read_csv(caminho, **READ_PARAMS))
-            except Exception as e:
-                print(f"    AVISO: erro ao ler {caminho}: {e}")
-
-        df = pd.concat(partes, ignore_index=True)
-
-    print(f"  [{ano}] Shape: {df.shape[0]:,} linhas × {df.shape[1]} colunas")
+    df = pd.concat(partes, ignore_index=True)
+    print(f"  [{ano}] Shape: {df.shape[0]:,} linhas x {df.shape[1]} colunas")
     return df
 
 
@@ -170,7 +160,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print("=" * 60)
-    print("ANÁLISE DE ESTRUTURA — DADOS TSE (2014 / 2018 / 2022)")
+    print("ANALISE DE ESTRUTURA -- DADOS TSE (2014 / 2018 / 2022)")
     print("=" * 60)
 
     # ── 1. CARREGAMENTO ─────────────────────────────────────────────────────
@@ -200,8 +190,8 @@ def main():
         os.path.join(OUTPUT_DIR, "colunas_divergentes_entre_anos.csv"),
         index=False, encoding="utf-8-sig"
     )
-    print("  → Salvo: comparacao_colunas_por_ano.csv")
-    print("  → Salvo: colunas_divergentes_entre_anos.csv")
+    print("  >> Salvo:comparacao_colunas_por_ano.csv")
+    print("  >> Salvo:colunas_divergentes_entre_anos.csv")
 
     # ── 3. RESUMO DE ESTRUTURA POR ANO ──────────────────────────────────────
     print("\n[3] Gerando resumo de estrutura por ano...")
@@ -212,7 +202,7 @@ def main():
         os.path.join(OUTPUT_DIR, "estrutura_colunas_por_ano.csv"),
         index=False, encoding="utf-8-sig"
     )
-    print("  → Salvo: estrutura_colunas_por_ano.csv")
+    print("  >> Salvo:estrutura_colunas_por_ano.csv")
 
     # ── 4. RESUMO DAS COLUNAS DE FOCO ───────────────────────────────────────
     print("\n[4] Verificando qualidade das colunas de foco (análise de representatividade)...")
@@ -244,7 +234,7 @@ def main():
         os.path.join(OUTPUT_DIR, "qualidade_colunas_foco.csv"),
         index=False, encoding="utf-8-sig"
     )
-    print("  → Salvo: qualidade_colunas_foco.csv")
+    print("  >> Salvo:qualidade_colunas_foco.csv")
 
     # ── 5. DISTRIBUIÇÃO DAS VARIÁVEIS CATEGÓRICAS DE INTERESSE ──────────────
     print("\n[5] Mapeando valores únicos das variáveis categóricas de interesse...")
@@ -262,7 +252,7 @@ def main():
         os.path.join(OUTPUT_DIR, "distribuicao_categoricas.csv"),
         index=False, encoding="utf-8-sig"
     )
-    print("  → Salvo: distribuicao_categoricas.csv")
+    print("  >> Salvo:distribuicao_categoricas.csv")
 
     # ── 6. IMPRESSÃO DE SUMÁRIO NO CONSOLE ──────────────────────────────────
     print("\n" + "=" * 60)
