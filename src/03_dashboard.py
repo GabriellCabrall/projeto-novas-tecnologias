@@ -453,7 +453,10 @@ def main():
         )
 
         st.markdown("---")
-        st.caption("Fonte: TSE — Repositório de Dados Eleitorais")
+        st.markdown("**Fonte dos dados — TSE**")
+        st.markdown("[Candidatos 2022](https://dadosabertos.tse.jus.br/dataset/candidatos-2022)")
+        st.markdown("[Candidatos 2018](https://dadosabertos.tse.jus.br/dataset/candidatos-2018)")
+        st.markdown("[Candidatos 2014](https://dadosabertos.tse.jus.br/dataset/candidatos-2014)")
         st.caption("Disciplina: Novas Tecnologias — UCB")
 
     # Aplica filtros globais
