@@ -10,6 +10,7 @@ Execução:
 """
 
 import os
+import unicodedata
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -40,6 +41,26 @@ COR_FEMININO  = "#E91E8C"
 COR_MASCULINO = "#1565C0"
 CORES_RACA    = {"Branca": "#FFB74D", "Negra": "#5D4037", "Outras": "#78909C"}
 CORES_REGIAO  = ["#FF7043", "#FFCA28", "#26A69A", "#5C6BC0", "#EC407A"]
+
+# Normaliza string removendo acentos — usado para comparar DS_GRAU_INSTRUCAO
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii").upper().strip()
+
+MAPA_INSTRUCAO = {
+    _norm("Lê e Escreve"):                  "Lê e Escreve",
+    _norm("Ensino Fundamental Incompleto"): "Fund. Incompleto",
+    _norm("Ensino Fundamental Completo"):   "Fund. Completo",
+    _norm("Ensino Médio Incompleto"):       "Médio Incompleto",
+    _norm("Ensino Médio Completo"):         "Médio Completo",
+    _norm("Superior Incompleto"):           "Superior Inc.",
+    _norm("Superior Completo"):             "Superior Comp.",
+}
+ORDEM_INSTRUCAO = list(MAPA_INSTRUCAO.values())
+
+CARGOS_FOCO = [
+    "DEPUTADO ESTADUAL", "DEPUTADO FEDERAL",
+    "DEPUTADO DISTRITAL", "SENADOR", "GOVERNADOR",
+]
 
 # ---------------------------------------------------------------------------
 # CARREGAMENTO E CACHE
@@ -174,28 +195,85 @@ def fig_evolucao_racial(df: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def fig_distribuicao_etaria(df: pd.DataFrame) -> plt.Figure:
-    """Distribuição percentual de faixa etária por gênero."""
+def fig_taxa_eleicao_faixa_genero(df: pd.DataFrame) -> plt.Figure:
+    """Taxa de eleição por faixa etária e gênero — mostra se a idade afeta as chances."""
     sub = df[df["DS_GENERO"].isin(GENEROS_VALIDOS)]
-    fem = sub[sub["DS_GENERO"] == "FEMININO"]["FAIXA_ETARIA"].value_counts()
-    mas = sub[sub["DS_GENERO"] == "MASCULINO"]["FAIXA_ETARIA"].value_counts()
+    pivot = (
+        sub.groupby(["FAIXA_ETARIA", "DS_GENERO"])["ELEITO"]
+        .mean().mul(100)
+        .unstack("DS_GENERO")
+        .reindex(ORDEM_FAIXAS)
+    )
 
-    fem_pct = [100 * fem.get(f, 0) / max(fem.sum(), 1) for f in ORDEM_FAIXAS]
-    mas_pct = [100 * mas.get(f, 0) / max(mas.sum(), 1) for f in ORDEM_FAIXAS]
-
-    fig, ax = plt.subplots(figsize=(9, 4))
+    fig, ax = plt.subplots(figsize=(10, 4))
     x, w = np.arange(len(ORDEM_FAIXAS)), 0.35
-    b_f = ax.bar(x - w / 2, fem_pct, w, label="Feminino",  color=COR_FEMININO,  alpha=0.85)
-    b_m = ax.bar(x + w / 2, mas_pct, w, label="Masculino", color=COR_MASCULINO, alpha=0.85)
-    ax.bar_label(b_f, fmt="%.1f%%", padding=2, fontsize=8)
-    ax.bar_label(b_m, fmt="%.1f%%", padding=2, fontsize=8)
+    b_f = ax.bar(x - w / 2, pivot["FEMININO"],  w, label="Feminino",  color=COR_FEMININO,  alpha=0.85)
+    b_m = ax.bar(x + w / 2, pivot["MASCULINO"], w, label="Masculino", color=COR_MASCULINO, alpha=0.85)
+    ax.bar_label(b_f, fmt="%.1f%%", padding=3, fontsize=8)
+    ax.bar_label(b_m, fmt="%.1f%%", padding=3, fontsize=8)
     ax.set_xticks(x)
     ax.set_xticklabels(ORDEM_FAIXAS)
-    ax.set_ylabel("% por Gênero")
-    ax.set_title("Distribuição Etária dos Candidatos por Gênero", fontweight="bold")
+    ax.set_ylabel("Taxa de Eleição (%)")
+    ax.set_title("Taxa de Eleição por Faixa Etária e Gênero", fontweight="bold")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
-    ax.set_ylim(0, max(max(fem_pct), max(mas_pct)) * 1.25)
+    ax.set_ylim(0, pivot.values.max() * 1.30)
     ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def fig_genero_por_cargo(df: pd.DataFrame) -> plt.Figure:
+    """% feminino entre candidatos vs eleitos nos 5 principais cargos."""
+    sub = df[df["DS_GENERO"].isin(GENEROS_VALIDOS) & df["DS_CARGO"].isin(CARGOS_FOCO)]
+
+    pct_cand, pct_eleitas = [], []
+    for cargo in CARGOS_FOCO:
+        s = sub[sub["DS_CARGO"] == cargo]
+        pct_cand.append(100 * (s["DS_GENERO"] == "FEMININO").mean() if len(s) else 0)
+        sel = s[s["ELEITO"] == 1]
+        pct_eleitas.append(100 * (sel["DS_GENERO"] == "FEMININO").mean() if len(sel) else 0)
+
+    # Rótulos compactos para o eixo Y
+    rotulos = [c.replace("DEPUTADO ", "DEP. ") for c in CARGOS_FOCO]
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    y, h = np.arange(len(CARGOS_FOCO)), 0.35
+    b1 = ax.barh(y + h / 2, pct_cand,   h, label="Candidatas", color=COR_FEMININO, alpha=0.65)
+    b2 = ax.barh(y - h / 2, pct_eleitas, h, label="Eleitas",    color="#880E4F",    alpha=0.90)
+    ax.bar_label(b1, fmt="%.1f%%", padding=3, fontsize=9)
+    ax.bar_label(b2, fmt="%.1f%%", padding=3, fontsize=9)
+    ax.set_yticks(y)
+    ax.set_yticklabels(rotulos)
+    ax.set_xlabel("% de Mulheres")
+    ax.set_title("Representação Feminina por Cargo", fontweight="bold")
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_xlim(0, max(max(pct_cand), max(pct_eleitas), 1) * 1.30)
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def fig_instrucao_taxa_eleicao(df: pd.DataFrame) -> plt.Figure:
+    """Taxa de eleição por grau de instrução — escolaridade como fator de sucesso."""
+    df2 = df.copy()
+    df2["_instrucao_norm"] = df2["DS_GRAU_INSTRUCAO"].apply(
+        lambda v: MAPA_INSTRUCAO.get(_norm(str(v))) if pd.notna(v) else None
+    )
+    sub = df2[df2["_instrucao_norm"].isin(ORDEM_INSTRUCAO)]
+    taxas = (
+        sub.groupby("_instrucao_norm")["ELEITO"]
+        .mean().mul(100)
+        .reindex(ORDEM_INSTRUCAO)
+    )
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    cores = plt.cm.Blues(np.linspace(0.35, 0.85, len(ORDEM_INSTRUCAO)))
+    bars = ax.barh(ORDEM_INSTRUCAO, taxas.values, color=cores)
+    ax.bar_label(bars, fmt="%.1f%%", padding=3, fontsize=9)
+    ax.set_xlabel("Taxa de Eleição (%)")
+    ax.set_title("Taxa de Eleição por Grau de Instrução", fontweight="bold")
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_xlim(0, taxas.max() * 1.30)
     fig.tight_layout()
     return fig
 
@@ -318,16 +396,31 @@ def main():
 
     with tab_perfil:
         st.subheader("Perfil Demográfico dos Candidatos")
-        st.pyplot(fig_distribuicao_etaria(df))
 
-        st.markdown("#### Resumo por Cargo")
-        resumo_cargo = (
-            df.groupby("DS_CARGO")
-            .agg(Candidatos=("ELEITO", "count"), Eleitos=("ELEITO", "sum"))
-            .assign(**{"Taxa de Eleição (%)": lambda x: (x["Eleitos"] / x["Candidatos"] * 100).round(1)})
-            .sort_values("Candidatos", ascending=False)
+        st.pyplot(fig_taxa_eleicao_faixa_genero(df))
+        st.info(
+            "**Leitura:** A taxa de eleição cresce com a idade para ambos os gêneros — "
+            "candidatos mais velhos têm mais capital político acumulado. "
+            "A diferença entre masculino e feminino se mantém em todas as faixas, "
+            "indicando que a barreira de gênero não depende da idade."
         )
-        st.dataframe(resumo_cargo, use_container_width=True)
+
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.pyplot(fig_genero_por_cargo(df))
+            st.info(
+                "**Leitura:** Compara o percentual de candidatas com o de eleitas "
+                "em cada cargo. Uma barra de eleitas menor que a de candidatas indica "
+                "que mulheres convertem menos em vitórias naquele cargo."
+            )
+        with col2:
+            st.pyplot(fig_instrucao_taxa_eleicao(df))
+            st.info(
+                "**Leitura:** Candidatos com superior completo têm taxa de eleição "
+                "substancialmente maior. Reflete tanto exigências do cargo quanto "
+                "acesso desigual ao capital político e financeiro de campanha."
+            )
 
 
 if __name__ == "__main__":
