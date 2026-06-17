@@ -18,6 +18,9 @@ matplotlib.use("Agg")  # backend sem janela — obrigatório para Streamlit
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import streamlit as st
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score
 
 # ---------------------------------------------------------------------------
 # CONFIGURAÇÃO DA PÁGINA
@@ -60,6 +63,12 @@ ORDEM_INSTRUCAO = list(MAPA_INSTRUCAO.values())
 CARGOS_FOCO = [
     "DEPUTADO ESTADUAL", "DEPUTADO FEDERAL",
     "DEPUTADO DISTRITAL", "SENADOR", "GOVERNADOR",
+]
+
+N_TOP_PARTIDOS  = 20
+FEATURES_MODELO = [
+    "DS_GENERO", "COR_RACA_AGRUPADA", "FAIXA_ETARIA",
+    "INSTRUCAO", "REGIAO", "DS_CARGO", "PARTIDO_AGRUP",
 ]
 
 # ---------------------------------------------------------------------------
@@ -295,6 +304,122 @@ def fig_taxa_eleicao_regiao(df: pd.DataFrame) -> plt.Figure:
 
 
 # ---------------------------------------------------------------------------
+# MODELO DE ML — SIMULADOR DE CHANCES DE ELEIÇÃO
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def treinar_modelo():
+    """
+    Treina Regressão Logística para prever ELEITO a partir do perfil do candidato.
+    Decorado com cache_resource: treina uma única vez por sessão do servidor.
+    """
+    df = pd.read_csv(DADOS_PATH, encoding="utf-8-sig", low_memory=False)
+    df["DS_GENERO"] = df["DS_GENERO"].str.strip()
+    df["INSTRUCAO"] = df["DS_GRAU_INSTRUCAO"].apply(
+        lambda v: MAPA_INSTRUCAO.get(_norm(str(v))) if pd.notna(v) else None
+    )
+    top_p = df["SG_PARTIDO"].value_counts().head(N_TOP_PARTIDOS).index.tolist()
+    df["PARTIDO_AGRUP"] = df["SG_PARTIDO"].apply(
+        lambda p: p if p in top_p else "OUTROS"
+    )
+
+    sub = df[FEATURES_MODELO + ["ELEITO"]].dropna().copy()
+    for col in FEATURES_MODELO:
+        sub[col] = sub[col].astype(str)
+
+    X = pd.get_dummies(sub[FEATURES_MODELO])
+    y = sub["ELEITO"]
+    feature_cols = X.columns.tolist()
+
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    modelo = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
+    modelo.fit(X_tr, y_tr)
+
+    acc = accuracy_score(y_te, modelo.predict(X_te))
+    auc = roc_auc_score(y_te, modelo.predict_proba(X_te)[:, 1])
+
+    return modelo, feature_cols, top_p, acc, auc, len(X_tr)
+
+
+def _perfil_para_x(genero, raca, faixa, instrucao, regiao, cargo, partido, feature_cols):
+    """Constrói um vetor de features para uma linha do formulário."""
+    row = {
+        "DS_GENERO": genero, "COR_RACA_AGRUPADA": raca,
+        "FAIXA_ETARIA": faixa, "INSTRUCAO": instrucao,
+        "REGIAO": regiao, "DS_CARGO": cargo, "PARTIDO_AGRUP": partido,
+    }
+    X = pd.get_dummies(pd.DataFrame([row]).astype(str))
+    return X.reindex(columns=feature_cols, fill_value=0)
+
+
+def fig_probabilidades_cargos(probs: dict, genero: str, raca: str) -> plt.Figure:
+    """Barras horizontais com a probabilidade prevista para cada cargo."""
+    ordem = sorted(probs, key=probs.get, reverse=True)
+    valores = [probs[c] for c in ordem]
+    rotulos = [c.replace("DEPUTADO ", "DEP. ") for c in ordem]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    cores = plt.cm.RdYlGn(np.linspace(0.25, 0.75, len(valores)))
+    bars = ax.barh(rotulos, valores, color=cores)
+    ax.bar_label(bars, fmt="%.2f%%", padding=4, fontsize=10)
+    ax.set_xlabel("Probabilidade de Eleição (%)")
+    ax.set_title(
+        f"Probabilidade de Eleição por Cargo\n({genero.capitalize()}, {raca})",
+        fontweight="bold",
+    )
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_xlim(0, max(valores, default=1) * 1.40)
+    fig.tight_layout()
+    return fig
+
+
+def fig_contexto_historico(df_full: pd.DataFrame, probs: dict,
+                            genero: str, raca: str) -> plt.Figure:
+    """
+    Compara a previsão do modelo com as taxas históricas reais:
+    - taxa do grupo (mesmo gênero + raça)
+    - taxa geral de todos os candidatos
+    """
+    sub   = df_full[df_full["DS_CARGO"].isin(CARGOS_FOCO) &
+                    df_full["DS_GENERO"].isin(GENEROS_VALIDOS)]
+    grupo = sub[(sub["DS_GENERO"] == genero) & (sub["COR_RACA_AGRUPADA"] == raca)]
+
+    t_grupo = sub.groupby("DS_CARGO")["ELEITO"].mean().mul(100)
+    t_geral = grupo.groupby("DS_CARGO")["ELEITO"].mean().mul(100)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    x, w = np.arange(len(CARGOS_FOCO)), 0.26
+    rotulos = [c.replace("DEPUTADO ", "DEP. ") for c in CARGOS_FOCO]
+
+    v_modelo = [probs.get(c, 0) for c in CARGOS_FOCO]
+    v_grupo  = [t_geral.get(c, 0) for c in CARGOS_FOCO]
+    v_geral  = [t_grupo.get(c, 0) for c in CARGOS_FOCO]
+
+    cor_perfil = COR_FEMININO if genero == "FEMININO" else COR_MASCULINO
+    b1 = ax.bar(x - w,     v_modelo, w, label="Modelo (previsão)",
+                color="#7B1FA2", alpha=0.90)
+    b2 = ax.bar(x,         v_grupo,  w, label=f"Histórico ({genero[:3].title()}. {raca})",
+                color=cor_perfil, alpha=0.75)
+    b3 = ax.bar(x + w,     v_geral,  w, label="Histórico geral",
+                color="#90A4AE", alpha=0.75)
+
+    for bars in (b1, b2, b3):
+        ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=7)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(rotulos)
+    ax.set_ylabel("Taxa / Probabilidade (%)")
+    ax.set_title("Previsão do Modelo vs. Taxas Históricas Reais", fontweight="bold")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_ylim(0, max(max(v_modelo), max(v_grupo), max(v_geral), 1) * 1.40)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # LAYOUT PRINCIPAL
 # ---------------------------------------------------------------------------
 
@@ -360,8 +485,8 @@ def main():
     st.markdown("---")
 
     # ── ABAS ─────────────────────────────────────────────────────────────────
-    tab_genero, tab_raca, tab_perfil = st.tabs(
-        ["Gênero", "Raça", "Perfil Demográfico"]
+    tab_genero, tab_raca, tab_perfil, tab_simulador = st.tabs(
+        ["Gênero", "Raça", "Perfil Demográfico", "Simulador"]
     )
 
     with tab_genero:
@@ -421,6 +546,79 @@ def main():
                 "substancialmente maior. Reflete tanto exigências do cargo quanto "
                 "acesso desigual ao capital político e financeiro de campanha."
             )
+
+
+    with tab_simulador:
+        st.subheader("Simulador de Chances de Eleição")
+        st.markdown(
+            "Preencha seu perfil e veja a probabilidade estimada de eleição "
+            "em cada cargo, com base nos padrões históricos de 2014–2022."
+        )
+        st.warning(
+            "**Atenção:** O modelo aprendeu padrões históricos dos dados do TSE. "
+            "Probabilidades baixas para certos grupos refletem desigualdades "
+            "estruturais do sistema eleitoral — não são uma sentença sobre potencial individual."
+        )
+
+        with st.spinner("Treinando modelo de Regressão Logística..."):
+            modelo, feature_cols, top_partidos, acc, auc, n_treino = treinar_modelo()
+
+        with st.expander("Métricas do modelo"):
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Acurácia (teste 20%)", f"{acc * 100:.1f}%")
+            mc2.metric("AUC-ROC",              f"{auc:.3f}")
+            mc3.metric("Registros no treino",  f"{n_treino:,}")
+            st.caption(
+                "Regressão Logística treinada em 80% dos dados e avaliada nos 20% restantes. "
+                "AUC-ROC: 0.5 = aleatório · 1.0 = perfeito."
+            )
+
+        st.markdown("---")
+        st.markdown("#### Seu perfil")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            genero    = st.selectbox("Gênero",            GENEROS_VALIDOS)
+            raca      = st.selectbox("Cor/Raça",           RACAS_VALIDAS)
+        with col2:
+            faixa     = st.selectbox("Faixa Etária",       ORDEM_FAIXAS, index=2)
+            instrucao = st.selectbox("Grau de Instrução",  ORDEM_INSTRUCAO, index=6)
+        with col3:
+            regiao    = st.selectbox("Região",             REGIOES_VALIDAS)
+            partido   = st.selectbox("Partido",
+                                     sorted(top_partidos) + ["OUTROS"])
+
+        st.markdown("---")
+
+        # Calcula probabilidade para cada cargo mantendo o perfil fixo
+        probs = {
+            cargo: round(
+                modelo.predict_proba(
+                    _perfil_para_x(genero, raca, faixa, instrucao,
+                                   regiao, cargo, partido, feature_cols)
+                )[0, 1] * 100,
+                2,
+            )
+            for cargo in CARGOS_FOCO
+        }
+
+        melhor = max(probs, key=probs.get)
+        st.markdown(
+            f"#### Maior chance estimada: **{melhor}** — **{probs[melhor]:.2f}%**"
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.pyplot(fig_probabilidades_cargos(probs, genero, raca))
+        with col_b:
+            st.pyplot(fig_contexto_historico(df_full, probs, genero, raca))
+
+        st.info(
+            "**Como ler o segundo gráfico:** Roxo = o que o modelo prevê para você. "
+            "Colorido = taxa histórica real de candidatos com o mesmo gênero e raça. "
+            "Cinza = taxa histórica de todos os candidatos para aquele cargo. "
+            "Quando roxo ≈ colorido, o modelo está bem calibrado para o seu perfil."
+        )
 
 
 if __name__ == "__main__":
